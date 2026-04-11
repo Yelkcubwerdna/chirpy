@@ -172,6 +172,32 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, 200, responseChirps)
 }
 
+func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
+	chirpString := r.PathValue("chirpID")
+
+	chirpUUID, err := uuid.Parse(chirpString)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Invalid Chirp ID: %s", err))
+		return
+	}
+
+	dbChirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpUUID)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Chirp does not exist: %s", err))
+		return
+	}
+
+	respChirp := Chirp{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+
+	respondWithJSON(w, 200, respChirp)
+}
+
 func respondWithError(w http.ResponseWriter, code int, msg string) {
 	type errRsp struct {
 		Err string `json:"error"`
@@ -261,6 +287,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 
 	err = server.ListenAndServe()
 	if err != nil {

@@ -2,8 +2,11 @@ package auth
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/alexedwards/argon2id"
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/google/uuid"
 )
 
 func HashPassword(password string) (string, error) {
@@ -21,4 +24,49 @@ func CheckPasswordHash(password, hash string) (bool, error) {
 	}
 
 	return valid, err
+}
+
+func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
+		Issuer:    "chirpy-access",
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiresIn)),
+		Subject:   userID.String(),
+	})
+
+	tString, err := token.SignedString([]byte(tokenSecret))
+	if err != nil {
+		return "", fmt.Errorf("Error creating token string: %v", err)
+	}
+
+	return tString, nil
+}
+
+func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
+	type CustomClaims struct {
+		Issuer    string          `json:"issuer"`
+		IssuedAt  jwt.NumericDate `json:"issued_at"`
+		ExpiresAt jwt.NumericDate `json:"expires_at"`
+		Subject   string          `json:"subject"`
+		jwt.RegisteredClaims
+	}
+
+	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (any, error) {
+		return []byte(tokenSecret), nil
+	})
+	if err != nil {
+		return uuid.UUID{}, fmt.Errorf("Error parsing token: %v", err)
+	}
+
+	tokenClaims, ok := token.Claims.(*jwt.RegisteredClaims)
+	if !ok {
+		return uuid.UUID{}, fmt.Errorf("Error with type assertion: %v", err)
+	}
+
+	userId, err := uuid.Parse(tokenClaims.Subject)
+	if err != nil {
+		return uuid.UUID{}, fmt.Errorf("Error parsing stringified UUID: %v", err)
+	}
+
+	return userId, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"context"
 	"database/sql"
@@ -80,7 +81,8 @@ func (cfg *apiConfig) resetHandler(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -91,7 +93,17 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dbUser, err := cfg.dbQueries.CreateUser(context.Background(), params.Email)
+	hashed, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error hashing password: %s", err))
+		return
+	}
+
+	dbUser, err := cfg.dbQueries.CreateUser(context.Background(),
+		database.CreateUserParams{
+			Email:          params.Email,
+			HashedPassword: hashed,
+		})
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error creating user: %s", err))
 		return
@@ -198,6 +210,53 @@ func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, 200, respChirp)
 }
 
+func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
+		return
+	}
+
+	dbUser, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprint("incorrect email or password"))
+		return
+	}
+
+	valid, err := auth.CheckPasswordHash(params.Password, dbUser.HashedPassword)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error checking password: %s", err))
+		return
+	}
+
+	if !valid {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprint("incorrect email or password"))
+	} else {
+		type respUser struct {
+			Id         uuid.UUID `json:"id"`
+			Created_at time.Time `json:"created_at"`
+			Updated_at time.Time `json:"updated_at"`
+			Email      string    `json:"email"`
+		}
+
+		resp := respUser{
+			Id:         dbUser.ID,
+			Created_at: dbUser.CreatedAt,
+			Updated_at: dbUser.UpdatedAt,
+			Email:      dbUser.Email,
+		}
+
+		respondWithJSON(w, http.StatusOK, resp)
+	}
+}
+
 func respondWithError(w http.ResponseWriter, code int, msg string) {
 	type errRsp struct {
 		Err string `json:"error"`
@@ -288,6 +347,7 @@ func main() {
 	mux.HandleFunc("POST /api/users", apiCfg.createUserHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
+	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 
 	err = server.ListenAndServe()
 	if err != nil {

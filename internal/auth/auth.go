@@ -2,6 +2,8 @@ package auth
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/alexedwards/argon2id"
@@ -69,4 +71,18 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	}
 
 	return userId, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	// Get bearer token
+	bearer := headers.Get("Authorization")
+
+	// strip off Bearer prefix and whitespace
+	bearer, ok := strings.CutPrefix(bearer, "Bearer ")
+	// If it didn't have the prefic something has gone wrong
+	if !ok {
+		return "", fmt.Errorf("No authorix=zation value in header")
+	}
+
+	return bearer, nil
 }

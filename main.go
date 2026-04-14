@@ -24,6 +24,7 @@ type apiConfig struct {
 	dbQueries      database.Queries
 	fileserverHits atomic.Int32
 	platform       string
+	secret         string
 }
 
 type User struct {
@@ -121,13 +122,26 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Body    string    `json:"body"`
-		User_id uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
+	}
+
+	// Get JWT Token
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("Invalid Authorization\nError: %v", err))
+		return
+	}
+
+	// Validate the token
+	userId, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("Invalid Authorization\nError: %v", err))
+		return
 	}
 
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
 		return
@@ -141,7 +155,7 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 	dbChirp, err := cfg.dbQueries.CreateChirp(r.Context(),
 		database.CreateChirpParams{
 			Body:   cleanChirp(params.Body),
-			UserID: params.User_id,
+			UserID: userId,
 		})
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error creating chirp: %s", err))
@@ -212,8 +226,9 @@ func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
+		Password         string `json:"password"`
+		Email            string `json:"email"`
+		ExpiresInSeconds int    `json:"expires_in_seconds"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -224,9 +239,15 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify if an expiration was given or valid
+	if params.ExpiresInSeconds < 1 || params.ExpiresInSeconds > 3600 {
+		// Set to default of 1 hour
+		params.ExpiresInSeconds = 3600
+	}
+
 	dbUser, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
 	if err != nil {
-		respondWithError(w, http.StatusUnauthorized, fmt.Sprint("incorrect email or password"))
+		respondWithError(w, http.StatusUnauthorized, "incorrect email or password")
 		return
 	}
 
@@ -237,13 +258,26 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !valid {
-		respondWithError(w, http.StatusUnauthorized, fmt.Sprint("incorrect email or password"))
+		respondWithError(w, http.StatusUnauthorized, "incorrect email or password")
 	} else {
+		duration, err := time.ParseDuration(fmt.Sprintf("%ds", params.ExpiresInSeconds))
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("Error creating time.Duration object: %v", err))
+		}
+
+		// Get a token to give to user
+		token, err := auth.MakeJWT(dbUser.ID, cfg.secret, duration)
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("Error creating token: %v", err))
+			return
+		}
+
 		type respUser struct {
 			Id         uuid.UUID `json:"id"`
 			Created_at time.Time `json:"created_at"`
 			Updated_at time.Time `json:"updated_at"`
 			Email      string    `json:"email"`
+			Token      string    `json:"token"`
 		}
 
 		resp := respUser{
@@ -251,6 +285,7 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 			Created_at: dbUser.CreatedAt,
 			Updated_at: dbUser.UpdatedAt,
 			Email:      dbUser.Email,
+			Token:      token,
 		}
 
 		respondWithJSON(w, http.StatusOK, resp)
@@ -325,6 +360,7 @@ func main() {
 		fileserverHits: atomic.Int32{},
 		dbQueries:      *dbQueries,
 		platform:       platform,
+		secret:         os.Getenv("SECRET"),
 	}
 
 	server := http.Server{}

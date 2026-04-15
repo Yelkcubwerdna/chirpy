@@ -226,9 +226,8 @@ func (cfg *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Password         string `json:"password"`
-		Email            string `json:"email"`
-		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -237,12 +236,6 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error decoding parameters: %s", err))
 		return
-	}
-
-	// Verify if an expiration was given or valid
-	if params.ExpiresInSeconds < 1 || params.ExpiresInSeconds > 3600 {
-		// Set to default of 1 hour
-		params.ExpiresInSeconds = 3600
 	}
 
 	dbUser, err := cfg.dbQueries.GetUserByEmail(r.Context(), params.Email)
@@ -260,9 +253,10 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 	if !valid {
 		respondWithError(w, http.StatusUnauthorized, "incorrect email or password")
 	} else {
-		duration, err := time.ParseDuration(fmt.Sprintf("%ds", params.ExpiresInSeconds))
+		duration, err := time.ParseDuration("3600s")
 		if err != nil {
 			respondWithError(w, 500, fmt.Sprintf("Error creating time.Duration object: %v", err))
+			return
 		}
 
 		// Get a token to give to user
@@ -272,24 +266,111 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Get a refresh_token
+		refresh_token := auth.MakeRefreshToken()
+
+		// Get expiration time
+		days60, err := time.ParseDuration("5184000s")
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("Error creating time.Duration: %v", err))
+			return
+		}
+		expires := time.Now().UTC().Add(days60)
+
+		// Store refresh_token in database
+		dbRefreshToken, err := cfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			Token:     refresh_token,
+			UserID:    dbUser.ID,
+			ExpiresAt: expires,
+		})
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("Error creating refresh token: %v", err))
+			return
+		}
+
 		type respUser struct {
-			Id         uuid.UUID `json:"id"`
-			Created_at time.Time `json:"created_at"`
-			Updated_at time.Time `json:"updated_at"`
-			Email      string    `json:"email"`
-			Token      string    `json:"token"`
+			Id           uuid.UUID `json:"id"`
+			Created_at   time.Time `json:"created_at"`
+			Updated_at   time.Time `json:"updated_at"`
+			Email        string    `json:"email"`
+			Token        string    `json:"token"`
+			RefreshToken string    `json:"refresh_token"`
 		}
 
 		resp := respUser{
-			Id:         dbUser.ID,
-			Created_at: dbUser.CreatedAt,
-			Updated_at: dbUser.UpdatedAt,
-			Email:      dbUser.Email,
-			Token:      token,
+			Id:           dbUser.ID,
+			Created_at:   dbUser.CreatedAt,
+			Updated_at:   dbUser.UpdatedAt,
+			Email:        dbUser.Email,
+			Token:        token,
+			RefreshToken: dbRefreshToken.Token,
 		}
 
 		respondWithJSON(w, http.StatusOK, resp)
 	}
+}
+
+func (cfg *apiConfig) refreshHandler(w http.ResponseWriter, r *http.Request) {
+	// Get token from header
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Get token data from database
+	dbToken, err := cfg.dbQueries.GetRefrshToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, 401, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Makes sure token hasn't expired or been revoked
+	if (dbToken.ExpiresAt.Compare(time.Now()) == -1) || dbToken.RevokedAt.Valid {
+		respondWithError(w, 401, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	hour, err := time.ParseDuration("60m")
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error parsing duration: %v", err))
+		return
+	}
+	token, err = auth.MakeJWT(dbToken.UserID, cfg.secret, hour)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error creating JWT: %v", err))
+		return
+	}
+
+	// If this code is reached, the token is valid. Return that value
+	type Resp struct {
+		Token string `json:"token"`
+	}
+
+	response := Resp{
+		Token: token,
+	}
+
+	respondWithJSON(w, 200, response)
+}
+
+func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
+	// Get the token
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Token doesn't exist: %v", err))
+		return
+	}
+
+	// Revoke the token
+	err = cfg.dbQueries.RevokeToken(r.Context(), token)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Couldn't revoken token: %v", err))
+		return
+	}
+
+	// Respond with 204 status code
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -384,6 +465,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
+	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
+	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
 
 	err = server.ListenAndServe()
 	if err != nil {

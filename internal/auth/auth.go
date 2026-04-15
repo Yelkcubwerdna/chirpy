@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -81,8 +83,15 @@ func GetBearerToken(headers http.Header) (string, error) {
 	bearer, ok := strings.CutPrefix(bearer, "Bearer ")
 	// If it didn't have the prefic something has gone wrong
 	if !ok {
-		return "", fmt.Errorf("No authorix=zation value in header")
+		return "", fmt.Errorf("No authorization value in header")
 	}
 
 	return bearer, nil
+}
+
+func MakeRefreshToken() string {
+	data := make([]byte, 32)
+	rand.Read(data)
+	token := hex.EncodeToString(data)
+	return token
 }

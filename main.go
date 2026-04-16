@@ -373,6 +373,66 @@ func (cfg *apiConfig) revokeHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *apiConfig) updateAccountHandler(w http.ResponseWriter, r *http.Request) {
+	// Set up struct for body
+	type parameters struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	// Get parameters out of body
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	decoder.Decode(&params)
+
+	// Get JWT token
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Valid token and get user id
+	userId, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Hash the password
+	hashed, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Update the user's pass and email
+	dbUser, err := cfg.dbQueries.UpdateUser(r.Context(), database.UpdateUserParams{
+		Email:          params.Email,
+		HashedPassword: hashed,
+		ID:             userId,
+	})
+
+	// Set up struct for response data
+	type response struct {
+		ID         uuid.UUID `json:"id"`
+		Created_At time.Time `json:"created_at"`
+		Updated_At time.Time `json:"updated_at"`
+		Email      string    `json:"email"`
+	}
+
+	// Form response
+	resp := response{
+		ID:         dbUser.ID,
+		Created_At: dbUser.CreatedAt,
+		Updated_At: dbUser.UpdatedAt,
+		Email:      dbUser.Email,
+	}
+
+	// Send response
+	respondWithJSON(w, http.StatusOK, resp)
+}
+
 func respondWithError(w http.ResponseWriter, code int, msg string) {
 	type errRsp struct {
 		Err string `json:"error"`
@@ -467,6 +527,7 @@ func main() {
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
+	mux.HandleFunc("PUT /api/users", apiCfg.updateAccountHandler)
 
 	err = server.ListenAndServe()
 	if err != nil {

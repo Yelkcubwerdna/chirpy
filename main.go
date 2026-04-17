@@ -433,6 +433,53 @@ func (cfg *apiConfig) updateAccountHandler(w http.ResponseWriter, r *http.Reques
 	respondWithJSON(w, http.StatusOK, resp)
 }
 
+func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
+	// Get user's token
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Validate token and get userId
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(w, 403, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Get the chirpID
+	chirpIDString := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(chirpIDString)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Chirp not found: %v", err))
+		return
+	}
+
+	// Get chirp info
+	dbChirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Chirp not found: %v", err))
+		return
+	}
+
+	// Verify that the user created the chirp
+	if userID != dbChirp.UserID {
+		respondWithError(w, 403, fmt.Sprintf("Unauthorized: %v", err))
+		return
+	}
+
+	// Delete chirp
+	err = cfg.dbQueries.DeleteChirp(r.Context(), chirpID)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("Chirp not found: %v", err))
+		return
+	}
+
+	//Chirp was deleted, send a confirmation response
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func respondWithError(w http.ResponseWriter, code int, msg string) {
 	type errRsp struct {
 		Err string `json:"error"`
@@ -528,7 +575,7 @@ func main() {
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshHandler)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
 	mux.HandleFunc("PUT /api/users", apiCfg.updateAccountHandler)
-
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
 	err = server.ListenAndServe()
 	if err != nil {
 		fmt.Printf("Error starting server: %v", "err")

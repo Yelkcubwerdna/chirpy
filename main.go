@@ -28,10 +28,11 @@ type apiConfig struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
@@ -110,14 +111,7 @@ func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	responseUser := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
-	}
-
-	respondWithJSON(w, http.StatusCreated, responseUser)
+	respondWithJSON(w, http.StatusCreated, makeUserResponseData(dbUser))
 }
 
 func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -289,19 +283,13 @@ func (cfg *apiConfig) loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		type respUser struct {
-			Id           uuid.UUID `json:"id"`
-			Created_at   time.Time `json:"created_at"`
-			Updated_at   time.Time `json:"updated_at"`
-			Email        string    `json:"email"`
-			Token        string    `json:"token"`
-			RefreshToken string    `json:"refresh_token"`
+			User
+			Token        string `json:"token"`
+			RefreshToken string `json:"refresh_token"`
 		}
 
 		resp := respUser{
-			Id:           dbUser.ID,
-			Created_at:   dbUser.CreatedAt,
-			Updated_at:   dbUser.UpdatedAt,
-			Email:        dbUser.Email,
+			User:         makeUserResponseData(dbUser),
 			Token:        token,
 			RefreshToken: dbRefreshToken.Token,
 		}
@@ -413,24 +401,8 @@ func (cfg *apiConfig) updateAccountHandler(w http.ResponseWriter, r *http.Reques
 		ID:             userId,
 	})
 
-	// Set up struct for response data
-	type response struct {
-		ID         uuid.UUID `json:"id"`
-		Created_At time.Time `json:"created_at"`
-		Updated_At time.Time `json:"updated_at"`
-		Email      string    `json:"email"`
-	}
-
-	// Form response
-	resp := response{
-		ID:         dbUser.ID,
-		Created_At: dbUser.CreatedAt,
-		Updated_At: dbUser.UpdatedAt,
-		Email:      dbUser.Email,
-	}
-
 	// Send response
-	respondWithJSON(w, http.StatusOK, resp)
+	respondWithJSON(w, http.StatusOK, makeUserResponseData(dbUser))
 }
 
 func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
@@ -478,6 +450,61 @@ func (cfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request)
 
 	//Chirp was deleted, send a confirmation response
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) upgradeUserHandler(w http.ResponseWriter, r *http.Request) {
+	// Specify request shape
+	type data struct {
+		UserID string `json:"user_id"`
+	}
+
+	type parameters struct {
+		Event string `json:"event"`
+		Data  data   `json:"data"`
+	}
+
+	// Get request data
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error parsing request data: %v", err))
+	}
+
+	// Make sure the event is "user.upgraded"
+	if params.Event != "user.upgraded" {
+		// Return 204 because we don't care about any other event
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Parse user_id into uuid
+	userID, err := uuid.Parse(params.Data.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, fmt.Sprintf("Unable to parse userId(%s): %v", params.Data.UserID, err))
+		return
+	}
+
+	// Upgrade user to chirpy red
+	_, err = cfg.dbQueries.UpgradeUser(r.Context(), userID)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, fmt.Sprintf("Unable to find userId(%v): %v", userID, err))
+		return
+	}
+
+	// Succesfully Upgraded
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func makeUserResponseData(dbUser database.User) User {
+
+	return User{
+		ID:          dbUser.ID,
+		CreatedAt:   dbUser.CreatedAt,
+		UpdatedAt:   dbUser.UpdatedAt,
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
+	}
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) {
@@ -576,6 +603,8 @@ func main() {
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeHandler)
 	mux.HandleFunc("PUT /api/users", apiCfg.updateAccountHandler)
 	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.upgradeUserHandler)
+
 	err = server.ListenAndServe()
 	if err != nil {
 		fmt.Printf("Error starting server: %v", "err")

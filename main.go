@@ -497,7 +497,6 @@ func (cfg *apiConfig) upgradeUserHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func makeUserResponseData(dbUser database.User) User {
-
 	return User{
 		ID:          dbUser.ID,
 		CreatedAt:   dbUser.CreatedAt,

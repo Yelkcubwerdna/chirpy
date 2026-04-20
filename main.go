@@ -25,6 +25,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	platform       string
 	secret         string
+	polkaKey       string
 }
 
 type User struct {
@@ -168,11 +169,32 @@ func (cfg *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
-	// Get chirps
-	dbChirps, err := cfg.dbQueries.GetChirps(r.Context())
-	if err != nil {
-		respondWithError(w, 500, fmt.Sprintf("Error getting chirps: %s", err))
-		return
+	// Initialize
+	var dbChirps []database.Chirp
+	var err error
+
+	// Get authorID
+	authorIDString := r.URL.Query().Get("author_id")
+
+	// See if there was an author id in the query
+	if authorIDString == "" {
+
+		// Get chirps
+		dbChirps, err = cfg.dbQueries.GetChirps(r.Context())
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("Error getting chirps: %s", err))
+			return
+		}
+	} else {
+		// Parse AuthorID string into a uuid
+		authorID, err := uuid.Parse(authorIDString)
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("Failed to parse UUID: %v", err))
+			return
+		}
+
+		// Get chirps
+		dbChirps, err = cfg.dbQueries.GetChirpsWithAuthor(r.Context(), authorID)
 	}
 
 	// Map chirps to chirp struct
@@ -463,10 +485,22 @@ func (cfg *apiConfig) upgradeUserHandler(w http.ResponseWriter, r *http.Request)
 		Data  data   `json:"data"`
 	}
 
+	// Confirm API Key
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("Unathorized: %v", err))
+		return
+	}
+
+	if apiKey != cfg.polkaKey {
+		respondWithError(w, http.StatusUnauthorized, fmt.Sprintf("Unathorized: %v", err))
+		return
+	}
+
 	// Get request data
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("Error parsing request data: %v", err))
 	}
@@ -570,11 +604,14 @@ func main() {
 
 	platform := os.Getenv("PLATFORM")
 
+	polkaKey := os.Getenv("POLKA_KEY")
+
 	apiCfg := apiConfig{
 		fileserverHits: atomic.Int32{},
 		dbQueries:      *dbQueries,
 		platform:       platform,
 		secret:         os.Getenv("SECRET"),
+		polkaKey:       polkaKey,
 	}
 
 	server := http.Server{}

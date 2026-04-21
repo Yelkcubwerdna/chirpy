@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -195,6 +196,16 @@ func (cfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
 
 		// Get chirps
 		dbChirps, err = cfg.dbQueries.GetChirpsWithAuthor(r.Context(), authorID)
+	}
+
+	// Check sorting
+	sortStyle := r.URL.Query().Get("sort")
+
+	// Sort is ascending unless specified otherwise
+	if sortStyle == "desc" {
+		sort.Slice(dbChirps, func(i, j int) bool {
+			return dbChirps[i].CreatedAt.After(dbChirps[j].CreatedAt)
+		})
 	}
 
 	// Map chirps to chirp struct
